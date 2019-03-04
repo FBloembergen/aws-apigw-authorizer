@@ -9,12 +9,22 @@ describe('authorizer', () => {
 
   let event: any;
   let lambdaAuthorizer: authorizer.ApiGatewayAuthorizer;
+  let websocketAuthorizer: authorizer.ApiGatewayAuthorizer;
   async function callHandler(event: any) {
     return new Promise((resolve, reject) => {
       function cb(err: any, res: any) {
         err ? reject(new Error(err)) : resolve(res)
       };
       lambdaAuthorizer.handler(event, <AWSLambda.Context>{}, cb);
+    });
+  }
+
+  async function callWebsocketHandler(event: any) {
+    return new Promise((resolve, reject) => {
+      function cb(err: any, res: any) {
+        err ? reject(new Error(err)) : resolve(res)
+      };
+      websocketAuthorizer.handler(event, <AWSLambda.Context>{}, cb);
     });
   }
 
@@ -35,7 +45,8 @@ describe('authorizer', () => {
         identity: {
           sourceIp: '192.168.0.1',
         }
-      }
+      },
+      queryStringParameters: {},
     };
 
     process.env.ALLOWED_IP_ADDRESSES = '192.168.0.1/32,123.456.789.012/0';
@@ -48,6 +59,15 @@ describe('authorizer', () => {
     lambdaAuthorizer = new authorizer.ApiGatewayAuthorizer({
       contextBuilder: (_event, principalId, _token) => ({ name: principalId })
     });
+    websocketAuthorizer = new authorizer.ApiGatewayAuthorizer({
+      contextBuilder: (_event, principalId, _token) => ({ name: principalId }),
+      tokenSelector: (event) => {
+        if (!event.queryStringParameters || !event.queryStringParameters.authorization) {
+          throw new Error('Authorization query string not present');
+        }
+        return { token: event.queryStringParameters.authorization, tokenType: 'Bearer' }
+      }
+    })
     setupNockMocks();
   });
 
@@ -131,6 +151,32 @@ describe('authorizer', () => {
     };
 
     await expect(callHandler(event)).to.eventually.deep.equal(expectation);
+  });
+
+  it('JWT validation with custom token location works', async () => {
+    event.queryStringParameters.authorization = `${config.idToken}`;
+    process.env.AUDIENCE_URI = config.userInfoAudience;
+
+    const expectation = {
+      "principalId": "api-gw-auth-tester@sharklasers.com",
+      "context": {
+        "name": "api-gw-auth-tester@sharklasers.com"
+      },
+      "policyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Action": "execute-api:Invoke",
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:execute-api:eu-west-1:123456789000:function/*/*/*"
+            ]
+          }
+        ]
+      }
+    };
+
+    await expect(callWebsocketHandler(event)).to.eventually.deep.equal(expectation);
   });
 
   it('JWT validation works case insensitive for HTTP/2', async () => {
@@ -217,6 +263,10 @@ describe('authorizer', () => {
     delete event.headers.Authorization;
 
     await expect(callHandler(event)).to.be.rejected;
+  });
+
+  it('Auth fails with custom token location function', async () => {
+    await expect(callWebsocketHandler(event)).to.be.rejected;
   });
 
 });

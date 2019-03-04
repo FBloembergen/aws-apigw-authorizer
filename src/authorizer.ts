@@ -14,11 +14,19 @@ export type PrincipalId = string;
 
 export type JwtPrincipalIdSelectorFunction = (event: AWSLambda.CustomAuthorizerEvent, decodedToken?: Jwt) => PrincipalId | Promise<PrincipalId>;
 
+export type TokenSelectorFunction = (event: AWSLambda.CustomAuthorizerEvent) => EncodedToken;
+
 export interface AuthorizerConfig {
     policyBuilder?: PolicyBuilderFunction;
     contextBuilder?: ContextBuilderFunction;
     authChecks?: AuthChecksFunction;
     jwtPrincipalIdSelector?: JwtPrincipalIdSelectorFunction;
+    tokenSelector?: TokenSelectorFunction;
+}
+
+interface EncodedToken {
+    tokenType: string;
+    token: string;
 }
 
 export type Jwt = string | object;
@@ -31,6 +39,7 @@ export class ApiGatewayAuthorizer {
     private basicAuthenticationEnabled: boolean = false;
     private jwtAuthenticationEnabled: boolean = false;
     private principalIdSelectorFunction: JwtPrincipalIdSelectorFunction;
+    private tokenSelectorFunction: TokenSelectorFunction;
 
     constructor(authorizerConfig?: AuthorizerConfig) {
 
@@ -39,6 +48,7 @@ export class ApiGatewayAuthorizer {
         this.contextBuilder = authorizerConfig && authorizerConfig.contextBuilder || (() => undefined);
         this.authChecks = authorizerConfig && authorizerConfig.authChecks || (() => undefined);
         this.principalIdSelectorFunction = authorizerConfig && authorizerConfig.jwtPrincipalIdSelector || defaultJwtPrincipalIdSelector;
+        this.tokenSelectorFunction = authorizerConfig && authorizerConfig.tokenSelector || defaultTokenSelectorFunction;
 
         // check environment for configured auth flavors
         if (Object.keys(process.env).filter(key => key.startsWith('BASIC_AUTH_USER_')).length) {
@@ -82,11 +92,6 @@ export class ApiGatewayAuthorizer {
         // Change headers to lowercase to support HTTP/2. See https://tools.ietf.org/html/rfc7540#section-8.1.2
         event.headers = toLowerCaseKeys(event.headers);
 
-        // Sanity check: the Authorization header must be present
-        if (!event.headers || !event.headers.authorization) {
-            throw new Error('Authorization HTTP header not present');
-        }
-
         // Sanity check: the callers sourceIp should be present
         const sourceIp = this.assertSourceIp(event);
 
@@ -104,7 +109,7 @@ export class ApiGatewayAuthorizer {
         }
 
         // Validate credentials
-        const [tokenType, token] = event.headers.authorization.split(' ');
+        const { tokenType, token } = this.tokenSelectorFunction(event);
         if (tokenType === 'Bearer' && this.jwtAuthenticationEnabled) {
             const decodedToken = await jwtValidator.validate(token);
             const principalId = await this.principalIdSelectorFunction(event, decodedToken);
@@ -173,6 +178,15 @@ function defaultJwtPrincipalIdSelector(_event: AWSLambda.CustomAuthorizerEvent, 
         principalId = decodedToken['email'] || decodedToken['upn'] || decodedToken['sub'];
     }
     return principalId || 'Undeterminable Principal';
+}
+
+function defaultTokenSelectorFunction(event: AWSLambda.CustomAuthorizerEvent): EncodedToken {
+    // Sanity check: the Authorization header must be present
+    if (!event.headers || !event.headers.authorization) {
+        throw new Error('Authorization HTTP header not present');
+    }
+    const [tokenType, token] = event.headers.authorization.split(' ');
+    return { tokenType, token }
 }
 
 function toLowerCaseKeys(obj: any) {
