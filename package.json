@@ -18,6 +18,7 @@
     "test": "mocha --require ts-node/register --timeout 5000 ./src/*.spec.ts",
     "watch": "mocha --watch --require ts-node/register --watch-extensions ts --timeout 5000 ./src/*.spec.ts",
     "tsc": "tsc",
+    "prepare" : "npm run build",
     "build": "npm run cover && rm -rf lib && tsc && cp src/*.d.ts src/*.js lib"
   },
   "repository": {
